@@ -1,0 +1,461 @@
+
+> pacman::p_load(tidyverse, data.table, haven, fixest, 
++     modelsummary, tsibble, rstanarm, posterior, bayesplot)
+
+> dt = zap_labels(read_sav("data/Madiera data 2024.sav"))
+
+> t1 = filter(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++     if_all(starts_with("Q16_"), ~!is.na(.x)))
+
+> t1_items = select(t1, starts_with("Q16_"))
+
+> printed_M = c(1.41, 1.68, 1.88, 1.93, 2.2, 2.51, 2.49, 
++     2.41, 2.29, 2.24)
+
+> printed_SD = c(0.94, 1.12, 1.2, 1.17, 1.1, 1.18, 1.12, 
++     1.16, 1.28, 1.3)
+
+> cmp = mutate(filter(tibble(item = 1:11, M = colMeans(t1_items), 
++     SD = map_dbl(t1_items, sd)), item != 6), printed_M = printed_M, 
++     printed_SD = printed_SD, gap_M = abs(M - printed_M), gap_SD = abs(SD - 
++         printed_SD))
+
+> cmp
+# A tibble: 10 × 7
+    item     M    SD printed_M printed_SD   gap_M   gap_SD
+   <int> <dbl> <dbl>     <dbl>      <dbl>   <dbl>    <dbl>
+ 1     1  1.41 0.948      1.41       0.94 0.00463 0.00804 
+ 2     2  1.68 1.13       1.68       1.12 0.00293 0.00781 
+ 3     3  1.88 1.21       1.88       1.2  0.00195 0.00820 
+ 4     4  1.93 1.17       1.93       1.17 0.00317 0.000262
+ 5     5  2.20 1.10       2.2        1.1  0.00488 0.000443
+ 6     7  2.51 1.19       2.51       1.18 0.00220 0.00579 
+ 7     8  2.49 1.12       2.49       1.12 0.00220 0.000758
+ 8     9  2.41 1.16       2.41       1.16 0.00463 0.00137 
+ 9    10  2.29 1.29       2.29       1.28 0.00268 0.00926 
+10    11  2.24 1.30       2.24       1.3  0.00390 0.000375
+
+> c(largest_gap_M = max(cmp$gap_M), largest_gap_SD = max(cmp$gap_SD))
+ largest_gap_M largest_gap_SD 
+   0.004878049    0.009261464 
+
+> gain = c(1505, 140, 1480, 625, 900, 1310, 425, 590, 
++     35, 20, 85)
+
+> cum_gain = c(1505, 1645, 3125, 3750, 4650, 5960, 6385, 
++     6975, 7010, 7030, 7115)
+
+> loss = c(380, 985, 205, 1355, 1070, 230, 705, 690, 
++     815, 305, 395)
+
+> cum_loss = c(380, 1365, 1570, 2925, 3995, 4225, 4930, 
++     5620, 6435, 6740, 7135)
+
+> cum_km = c(14.5, 21.7, 32.5, 47, 61, 71.5, 80.9, 90.4, 
++     98.9, 103.9, 115.7)
+
+> all(cumsum(gain) == cum_gain)
+[1] TRUE
+
+> all(cumsum(loss) == cum_loss)
+[1] TRUE
+
+> all(diff(cum_km) > 0)
+[1] TRUE
+
+> items <- grep("^Q16_", names(dt), value = TRUE)
+
+> dt$CF <- ifelse(rowSums(is.na(dt[items])) == 0, rowMeans(dt[items]), 
++     NA)
+
+> vars <- c("Race_Sat", "MTI", "BRS", "CDRISC", "CE", 
++     "CF")
+
+> round(sapply(dt[vars], function(x) c(n = sum(!is.na(x)), 
++     M = mean(x, na.rm = TRUE), SD = sd(x, na.rm = TRUE))), 2)
+   Race_Sat   MTI   BRS CDRISC    CE    CF
+n     48.00 48.00 47.00  46.00 48.00 41.00
+M      3.52  6.15  3.54   1.91  2.73  2.15
+SD     1.50  0.94  0.51   0.42  0.42  0.78
+
+> round(cor(dt[vars], use = "pairwise.complete.obs"), 
++     2)
+         Race_Sat   MTI   BRS CDRISC   CE    CF
+Race_Sat     1.00 -0.04  0.05   0.08 0.24 -0.35
+MTI         -0.04  1.00  0.38   0.50 0.06 -0.04
+BRS          0.05  0.38  1.00   0.35 0.05 -0.10
+CDRISC       0.08  0.50  0.35   1.00 0.07 -0.01
+CE           0.24  0.06  0.05   0.07 1.00  0.01
+CF          -0.35 -0.04 -0.10  -0.01 0.01  1.00
+
+> p <- outer(vars, vars, Vectorize(function(a, b) cor.test(dt[[a]], 
++     dt[[b]])$p.value))
+
+> dimnames(p) <- list(vars, vars)
+
+> round(p, 3)
+         Race_Sat   MTI   BRS CDRISC    CE    CF
+Race_Sat    0.000 0.803 0.716  0.593 0.104 0.023
+MTI         0.803 0.000 0.008  0.000 0.696 0.793
+BRS         0.716 0.008 0.000  0.017 0.730 0.523
+CDRISC      0.593 0.000 0.017  0.000 0.622 0.963
+CE          0.104 0.696 0.730  0.622 0.000 0.940
+CF          0.023 0.793 0.523  0.963 0.940 0.000
+
+> fig1 = function(covs = NULL) {
++     d = mutate(drop_na(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++         all_of(c("Race_Sat", "CE", "MTI", covs))), ce_c = CE - 
++         mean(CE), mt_c = MTI - mean(MTI))
++     full = lm(as.formula(paste("Race_Sat ~", paste(c("ce_c * mt_c", 
++         covs), collapse = " + "))), data = d)
++     red = update(full, . ~ . - ce_c:mt_c)
++     s = summary(full)
++     cat("\nn =", nrow(d), " R2 =", round(s$r.squared, 4), sprintf(" F(%d,%d) = %.2f, p = %.3f", 
++         s$fstatistic[2], s$fstatistic[3], s$fstatistic[1], pf(s$fstatistic[1], 
++             s$fstatistic[2], s$fstatistic[3], lower.tail = FALSE)), 
++         " dR2 =", round(s$r.squared - summary(red)$r.squared, 
++             3), "\n")
++     print(round(cbind(b = coef(full), confint(full), p = s$coefficients[, 
++         4]), 3))
++     print(anova(red, full))
++ }
+
+> fig1()
+
+n = 48  R2 = 0.1459  F(3,44) = 2.51, p = 0.071  dR2 = 0.087 
+                 b  2.5 % 97.5 %     p
+(Intercept)  3.490  3.072  3.908 0.000
+ce_c         0.844 -0.159  1.847 0.097
+mt_c        -0.187 -0.649  0.275 0.419
+ce_c:mt_c    1.373  0.066  2.680 0.040
+Analysis of Variance Table
+
+Model 1: Race_Sat ~ ce_c + mt_c
+Model 2: Race_Sat ~ ce_c * mt_c
+  Res.Df    RSS Df Sum of Sq      F  Pr(>F)  
+1     45 99.733                              
+2     44 90.518  1    9.2159 4.4798 0.03999 *
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+> fig1(c("BRS", "CDRISC"))
+
+n = 46  R2 = 0.1405  F(5,40) = 1.31, p = 0.280  dR2 = 0.074 
+                 b  2.5 % 97.5 %     p
+(Intercept)  2.397 -1.404  6.197 0.210
+ce_c         0.801 -0.259  1.862 0.134
+mt_c        -0.304 -0.901  0.293 0.309
+BRS          0.150 -0.806  1.106 0.753
+CDRISC       0.281 -0.996  1.559 0.659
+ce_c:mt_c    1.288 -0.116  2.692 0.071
+Analysis of Variance Table
+
+Model 1: Race_Sat ~ ce_c + mt_c + BRS + CDRISC
+Model 2: Race_Sat ~ ce_c * mt_c + BRS + CDRISC
+  Res.Df    RSS Df Sum of Sq      F  Pr(>F)  
+1     41 96.591                              
+2     40 88.943  1    7.6475 3.4393 0.07105 .
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+> d = mutate(drop_na(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++     Race_Sat, CE, MTI, BRS, CDRISC), ce_c = CE - mean(CE), mt_c = MTI - 
++     mean(MTI))
+
+> m = lm(Race_Sat ~ ce_c * mt_c + BRS + CDRISC, data = d)
+
+> V = vcov(m)
+
+> q = qt(0.975, m$df.residual)
+
+> map_dfr(c(high = 1, low = -1), function(k) {
++     w = k * sd(d$MTI)
++     b = coef(m)["ce_c"] + w * coef(m)["ce_c:mt_c"]
++     se = sqrt(V["ce_c", "ce_c"] + w^2 * V["ce_c:mt_c", "ce_c:mt_c"] + 
++         2 * w * V["ce_c", "ce_c:mt_c"])
++     tibble(MT = ifelse(k > 0, "high", "low"), b = b, lo = b - 
++         q * se, hi = b + q * se, p = 2 * pt(-abs(b/se), m$df.residual))
++ })
+# A tibble: 2 × 5
+  MT         b     lo    hi      p
+  <chr>  <dbl>  <dbl> <dbl>  <dbl>
+1 high   1.98   0.290  3.67 0.0228
+2 low   -0.376 -2.02   1.26 0.646 
+
+> d = mutate(drop_na(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++     Race_Sat, CE, MTI, BRS, CDRISC), ce_c = CE - mean(CE), mt_c = MTI - 
++     mean(MTI))
+
+> m = lm(Race_Sat ~ ce_c * mt_c + BRS + CDRISC, data = d)
+
+> pred = function(x, w) predict(m, newdata = tibble(ce_c = x, 
++     mt_c = w, BRS = mean(d$BRS), CDRISC = mean(d$CDRISC)))
+
+> w_hi = sd(d$MTI)
+
+> w_lo = -sd(d$MTI)
+
+> b_hi = coef(m)["ce_c"] + w_hi * coef(m)["ce_c:mt_c"]
+
+> b_lo = coef(m)["ce_c"] + w_lo * coef(m)["ce_c:mt_c"]
+
+> x_cross = (pred(0, w_lo) - pred(0, w_hi))/(b_hi - 
++     b_lo)
+
+> c(x_cross = x_cross, y_cross = pred(x_cross, w_hi))
+x_cross.1 y_cross.1 
+0.2359999 3.6546286 
+
+> c(span_high = 2.5/b_hi, span_low = -0.5/b_lo, sd_CE = sd(d$CE))
+span_high.ce_c  span_low.ce_c          sd_CE 
+     1.2633691      1.3299657      0.4252807 
+
+> fig_models = function(mod, covs = NULL) {
++     d = mutate(drop_na(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++         all_of(c("Race_Sat", "CE", mod, covs))), ce_c = CE - 
++         mean(CE), w_c = .data[[mod]] - mean(.data[[mod]]))
++     full = lm(as.formula(paste("Race_Sat ~", paste(c("ce_c * w_c", 
++         covs), collapse = " + "))), data = d)
++     red = update(full, . ~ . - ce_c:w_c)
++     s = summary(full)
++     cat("\n", mod, if (!is.null(covs)) 
++         "adjusted", " n =", nrow(d), " R2 =", round(s$r.squared, 
++         4), sprintf(" F(%d,%d) = %.2f, p = %.3f", s$fstatistic[2], 
++         s$fstatistic[3], s$fstatistic[1], pf(s$fstatistic[1], 
++             s$fstatistic[2], s$fstatistic[3], lower.tail = FALSE)), 
++         " dR2 =", round(s$r.squared - summary(red)$r.squared, 
++             3), "\n")
++     print(round(cbind(b = coef(full), confint(full), p = s$coefficients[, 
++         4]), 3))
++     print(anova(red, full))
++ }
+
+> fig_models("CDRISC")
+
+ CDRISC  n = 46  R2 = 0.2558  F(3,42) = 4.81, p = 0.006  dR2 = 0.201 
+                b  2.5 % 97.5 %     p
+(Intercept) 3.432  3.028  3.836 0.000
+ce_c        0.589 -0.379  1.556 0.226
+w_c         0.250 -0.728  1.227 0.609
+ce_c:w_c    3.562  1.429  5.695 0.002
+Analysis of Variance Table
+
+Model 1: Race_Sat ~ ce_c + w_c
+Model 2: Race_Sat ~ ce_c * w_c
+  Res.Df    RSS Df Sum of Sq      F  Pr(>F)   
+1     43 97.843                               
+2     42 77.014  1    20.829 11.359 0.00162 **
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+> fig_models("CDRISC", c("BRS", "MTI"))
+
+ CDRISC adjusted  n = 46  R2 = 0.2926  F(5,40) = 3.31, p = 0.014  dR2 = 0.226 
+                 b  2.5 % 97.5 %     p
+(Intercept)  5.526  1.544  9.507 0.008
+ce_c         0.561 -0.408  1.530 0.249
+w_c          0.641 -0.521  1.803 0.272
+BRS          0.079 -0.790  0.947 0.855
+MTI         -0.385 -0.928  0.158 0.159
+ce_c:w_c     3.859  1.678  6.041 0.001
+Analysis of Variance Table
+
+Model 1: Race_Sat ~ ce_c + w_c + BRS + MTI
+Model 2: Race_Sat ~ ce_c * w_c + BRS + MTI
+  Res.Df    RSS Df Sum of Sq      F   Pr(>F)    
+1     41 96.591                                 
+2     40 73.202  1    23.389 12.781 0.000933 ***
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+> slopes = function(mod, covs) {
++     d = mutate(drop_na(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++         all_of(c("Race_Sat", "CE", mod, covs))), ce_c = CE - 
++         mean(CE), w_c = .data[[mod]] - mean(.data[[mod]]))
++     m = lm(as.formula(paste("Race_Sat ~ ce_c * w_c +", paste(covs, 
++         collapse = " + "))), data = d)
++     V = vcov(m)
++     q = qt(0.975, m$df.residual)
++     map_dfr(c(high = 1, low = -1), function(k) {
++         w = k * sd(d[[mod]])
++         b = coef(m)["ce_c"] + w * coef(m)["ce_c:w_c"]
++         se = sqrt(V["ce_c", "ce_c"] + w^2 * V["ce_c:w_c", "ce_c:w_c"] + 
++             2 * w * V["ce_c", "ce_c:w_c"])
++         tibble(level = ifelse(k > 0, "high", "low"), b = b, lo = b - 
++             q * se, hi = b + q * se, p = 2 * pt(-abs(b/se), m$df.residual))
++     })
++ }
+
+> slopes("CDRISC", c("BRS", "MTI"))
+# A tibble: 2 × 5
+  level     b     lo    hi       p
+  <chr> <dbl>  <dbl> <dbl>   <dbl>
+1 high   2.17  0.928 3.42  0.00107
+2 low   -1.05 -2.46  0.358 0.140  
+
+> fig_lines = function(mod, covs, rise_hi, rise_lo) {
++     d = mutate(drop_na(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++         all_of(c("Race_Sat", "CE", mod, covs))), ce_c = CE - 
++         mean(CE), w_c = .data[[mod]] - mean(.data[[mod]]))
++     m = lm(as.formula(paste("Race_Sat ~ ce_c * w_c +", paste(covs, 
++         collapse = " + "))), data = d)
++     nd = function(x, w) bind_cols(tibble(ce_c = x, w_c = w), 
++         summarise(d, across(all_of(covs), mean)))
++     pred = function(x, w) predict(m, newdata = nd(x, w))
++     w_hi = sd(d[[mod]])
++     w_lo = -w_hi
++     b_hi = coef(m)["ce_c"] + w_hi * coef(m)["ce_c:w_c"]
++     b_lo = coef(m)["ce_c"] + w_lo * coef(m)["ce_c:w_c"]
++     x_cross = (pred(0, w_lo) - pred(0, w_hi))/(b_hi - b_lo)
++     c(slope_hi = b_hi, slope_lo = b_lo, x_cross = x_cross, y_cross = pred(x_cross, 
++         w_hi), span_hi = rise_hi/b_hi, span_lo = rise_lo/b_lo, 
++         sd_CE = sd(d$CE))
++ }
+
+> fig_lines("CDRISC", c("BRS", "MTI"), 2.85, -1.4)
+slope_hi.ce_c slope_lo.ce_c     x_cross.1     y_cross.1  span_hi.ce_c 
+    2.1734226    -1.0517835    -0.1660760     3.3350950     1.3112959 
+ span_lo.ce_c         sd_CE 
+    1.3310724     0.4252807 
+
+> fig_models("BRS")
+
+ BRS  n = 47  R2 = 0.158  F(3,43) = 2.69, p = 0.058  dR2 = 0.107 
+                b  2.5 % 97.5 %     p
+(Intercept) 3.467  3.048  3.887 0.000
+ce_c        0.698 -0.312  1.708 0.171
+w_c         0.337 -0.508  1.182 0.425
+ce_c:w_c    2.008  0.278  3.738 0.024
+Analysis of Variance Table
+
+Model 1: Race_Sat ~ ce_c + w_c
+Model 2: Race_Sat ~ ce_c * w_c
+  Res.Df    RSS Df Sum of Sq      F  Pr(>F)  
+1     44 98.483                              
+2     43 87.353  1     11.13 5.4791 0.02395 *
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+> fig_models("BRS", c("MTI", "CDRISC"))
+
+ BRS adjusted  n = 46  R2 = 0.1838  F(5,40) = 1.80, p = 0.135  dR2 = 0.117 
+                 b  2.5 % 97.5 %     p
+(Intercept)  4.922  1.498  8.346 0.006
+ce_c         0.705 -0.330  1.739 0.176
+w_c          0.514 -0.462  1.489 0.294
+MTI         -0.309 -0.888  0.270 0.287
+CDRISC       0.231 -1.016  1.478 0.710
+ce_c:w_c     2.155  0.338  3.972 0.021
+Analysis of Variance Table
+
+Model 1: Race_Sat ~ ce_c + w_c + MTI + CDRISC
+Model 2: Race_Sat ~ ce_c * w_c + MTI + CDRISC
+  Res.Df    RSS Df Sum of Sq      F  Pr(>F)  
+1     41 96.591                              
+2     40 84.462  1    12.129 5.7441 0.02131 *
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+> slopes("BRS", c("MTI", "CDRISC"))
+# A tibble: 2 × 5
+  level      b     lo    hi       p
+  <chr>  <dbl>  <dbl> <dbl>   <dbl>
+1 high   1.82   0.463  3.18 0.00991
+2 low   -0.414 -1.85   1.02 0.564  
+
+> fig_lines("BRS", c("MTI", "CDRISC"), NA, -0.55)
+slope_hi.ce_c slope_lo.ce_c     x_cross.1     y_cross.1  span_hi.ce_c 
+    1.8234094    -0.4139336    -0.2383431     3.2876556            NA 
+ span_lo.ce_c         sd_CE 
+    1.3287154     0.4252807 
+
+> f4 = filter(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++     if_all(starts_with("Q16_"), ~!is.na(.x)))
+
+> Y = as.matrix(select(f4, starts_with("Q16_")))
+
+> round(colMeans(Y), 2)
+  Q16_1FrequencyOfHabitualStrategy1   Q16_2FrequencyOfHabitualStrategy2 
+                               1.41                                1.68 
+  Q16_3FrequencyOfHabitualStrategy3   Q16_4FrequencyOfHabitualStrategy4 
+                               1.88                                1.93 
+  Q16_5FrequencyOfHabitualStrategy5   Q16_6FrequencyOfHabitualStrategy6 
+                               2.20                                2.59 
+  Q16_7FrequencyOfHabitualStrategy7   Q16_8FrequencyOfHabitualStrategy8 
+                               2.51                                2.49 
+  Q16_9FrequencyOfHabitualStrategy9 Q16_10FrequencyOfHabitualStrategy10 
+                               2.41                                2.29 
+Q16_11FrequencyOfHabitualStrategy11 
+                               2.24 
+
+> D = Y %*% contr.poly(11)
+
+> summary(manova(D ~ 1), test = "Wilks", intercept = TRUE)
+            Df   Wilks approx F num Df den Df    Pr(>F)    
+(Intercept)  1 0.42259   4.2356     10     31 0.0009226 ***
+Residuals   40                                             
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+> trend = function(k) {
++     s = D[, k]
++     n = length(s)
++     F = n * mean(s)^2/var(s)
++     c(F = F, p = pf(F, 1, n - 1, lower.tail = FALSE), eta_p2 = F/(F + 
++         n - 1))
++ }
+
+> trend(1)
+           F            p       eta_p2 
+1.555878e+01 3.142089e-04 2.800418e-01 
+
+> trend(2)
+           F            p       eta_p2 
+12.460096929  0.001062552  0.237515705 
+
+> dt <- dt[complete.cases(dt[items]), ]
+
+> dt = mutate(mutate(dt, id = row_number()), group = ifelse(Race_Sat == 
++     5, 1, 0))
+
+> scores = summarise(group_by(mutate(pivot_longer(dt, 
++     starts_with("Q16_"), names_to = "item", values_to = "coping"), 
++     time = as.integer(str_match(item, "^Q16_(\\d+)")[, 2])), 
++     id, group), lin = sum(coping * (time - 6)), quad = sum(coping * 
++     ((time - 6)^2 - 10)), .groups = "drop")
+
+> mutate(summarise(group_by(pivot_longer(scores, c(lin, 
++     quad), names_to = "trend", values_to = "score"), group, trend), 
++     n = n(), mean = mean(score), t = t.test(score)$statistic, 
++     p = t.test(score)$p.value, .groups = "drop"), F = t^2)
+# A tibble: 4 × 7
+  group trend     n   mean      t        p      F
+  <dbl> <chr> <int>  <dbl>  <dbl>    <dbl>  <dbl>
+1     0 lin      28   6.25  2.19  0.0374    4.79 
+2     0 quad     28 -25.3  -4.11  0.000334 16.9  
+3     1 lin      13  16.9   4.14  0.00138  17.1  
+4     1 quad     13  -9.38 -0.772 0.455     0.596
+
+> f5 = mutate(filter(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++     if_all(starts_with("Q16_"), ~!is.na(.x))), group = ifelse(Race_Sat == 
++     5, "high", "low"))
+
+> pivot_wider(summarise(group_by(mutate(pivot_longer(f5, 
++     starts_with("Q16_"), names_to = "item", values_to = "coping"), 
++     time = as.integer(str_match(item, "^Q16_(\\d+)")[, 2])), 
++     group, time), M = mean(coping), .groups = "drop"), names_from = group, 
++     values_from = M)
+# A tibble: 11 × 3
+    time  high   low
+   <int> <dbl> <dbl>
+ 1     1  1.23  1.5 
+ 2     2  1.62  1.71
+ 3     3  1.46  2.07
+ 4     4  1.85  1.96
+ 5     5  2.15  2.21
+ 6     6  2.38  2.68
+ 7     7  2.31  2.61
+ 8     8  2.54  2.46
+ 9     9  2.54  2.36
+10    10  2.92  2   
+11    11  2.62  2.07

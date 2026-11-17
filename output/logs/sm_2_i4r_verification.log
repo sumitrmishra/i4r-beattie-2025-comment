@@ -1,0 +1,1152 @@
+
+> pacman::p_load(tidyverse, data.table, haven, fixest, 
++     modelsummary, tsibble, rstanarm, posterior, bayesplot)
+
+> dt = zap_labels(read_sav("data/Madiera data 2024.sav"))
+
+> items <- grep("^Q16_", names(dt), value = TRUE)
+
+> dt <- dt[complete.cases(dt[items]), ]
+
+> dt = mutate(mutate(dt, id = row_number()), group = ifelse(Race_Sat == 
++     5, 1, 0))
+
+> scores = summarise(group_by(mutate(pivot_longer(dt, 
++     starts_with("Q16_"), names_to = "item", values_to = "coping"), 
++     time = as.integer(str_match(item, "^Q16_(\\d+)")[, 2])), 
++     id, group), lin = sum(coping * (time - 6)), quad = sum(coping * 
++     ((time - 6)^2 - 10)), .groups = "drop")
+
+> mutate(summarise(group_by(pivot_longer(scores, c(lin, 
++     quad), names_to = "trend", values_to = "score"), trend), 
++     mean_0 = mean(score[group == 0]), mean_1 = mean(score[group == 
++         1]), t = t.test(score ~ group, var.equal = TRUE)$statistic, 
++     p = t.test(score ~ group, var.equal = TRUE)$p.value), F = t^2)
+# A tibble: 2 × 6
+  trend mean_0 mean_1     t      p     F
+  <chr>  <dbl>  <dbl> <dbl>  <dbl> <dbl>
+1 lin     6.25  16.9  -2.12 0.0404  4.50
+2 quad  -25.3   -9.38 -1.30 0.200   1.70
+
+> scores = left_join(scores, select(dt, id, Race_Sat), 
++     by = "id")
+
+> summary(lm(quad ~ Race_Sat, data = scores))$coefficients
+              Estimate Std. Error    t value  Pr(>|t|)
+(Intercept) -28.514079  17.927134 -1.5905542 0.1197845
+Race_Sat      2.195307   4.516339  0.4860811 0.6296298
+
+> Y = as.matrix(select(dt, starts_with("Q16_")))
+
+> D = Y %*% contr.poly(11)
+
+> summary(manova(D ~ dt$group), test = "Wilks")
+          Df   Wilks approx F num Df den Df  Pr(>F)  
+dt$group   1 0.59705   2.0247     10     30 0.06624 .
+Residuals 39                                         
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+> long = filter(mutate(pivot_longer(mutate(filter(mutate(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++     id = row_number()), !is.na(Race_Sat)), group = ifelse(Race_Sat == 
++     5, 1, 0)), starts_with("Q16_"), names_to = "item", values_to = "coping"), 
++     time = as.integer(str_match(item, "^Q16_(\\d+)")[, 2]), tL = contr.poly(11)[time, 
++         1], tQ = contr.poly(11)[time, 2], tf = factor(time)), 
++     !is.na(coping))
+
+> contrasts(long$tf) = contr.poly(11)
+
+> fits = function(f, qname) {
++     cs = nlme::gls(f, data = long, correlation = nlme::corCompSymm(form = ~time | 
++         id))
++     ar1 = nlme::gls(f, data = long, correlation = nlme::corAR1(form = ~time | 
++         id))
++     un = nlme::gls(f, data = long, correlation = nlme::corSymm(form = ~time | 
++         id), weights = nlme::varIdent(form = ~1 | time), control = nlme::glsControl(msMaxIter = 200, 
++         opt = "optim"))
++     qp = function(m) summary(m)$tTable[qname, "p-value"]
++     c(CS = qp(cs), AR1 = qp(ar1), UN = qp(un), AIC_gap = AIC(cs) - 
++         AIC(ar1))
++ }
+
+> fits(coping ~ (tL + tQ) * group, "tQ:group")
+         CS         AR1          UN     AIC_gap 
+ 0.03936387  0.31283647  0.48067034 72.03560647 
+
+> fits(coping ~ tf * group, "tf.Q:group")
+         CS         AR1          UN     AIC_gap 
+ 0.03578288  0.20473550  0.15146814 69.02774888 
+
+> dt = mutate(drop_na(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++     Race_Sat, CE, MTI), ce_c = CE - mean(CE), mt_c = MTI - mean(MTI))
+
+> m = feols(Race_Sat ~ ce_c * mt_c, data = dt)
+
+> print(m)
+OLS estimation, Dep. Var.: Race_Sat
+Observations: 48
+Standard-errors: IID 
+             Estimate Std. Error   t value  Pr(>|t|)    
+(Intercept)  3.490139   0.207531 16.817460 < 2.2e-16 ***
+ce_c         0.843684   0.497640  1.695370  0.097072 .  
+mt_c        -0.186987   0.229063 -0.816312  0.418719    
+ce_c:mt_c    1.372935   0.648665  2.116556  0.039989 *  
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+RMSE: 1.37324   Adj. R2: 0.087659
+
+> set.seed(20261113)
+
+> boot1 = replicate(5000, {
++     s = mutate(slice_sample(dt, prop = 1, replace = TRUE), ce_c = CE - 
++         mean(CE), mt_c = MTI - mean(MTI))
++     coef(lm(Race_Sat ~ ce_c * mt_c, data = s))["ce_c:mt_c"]
++ })
+
+> quantile(boot1, c(0.025, 0.975))
+      2.5%      97.5% 
+-0.8457499  2.3203905 
+
+> boot2 = replicate(10000, {
++     s = mutate(slice_sample(dt, prop = 1, replace = TRUE), ce_c = CE - 
++         mean(CE), mt_c = MTI - mean(MTI))
++     coef(lm(Race_Sat ~ ce_c * mt_c, data = s))["ce_c:mt_c"]
++ })
+
+> quantile(boot2, c(0.025, 0.975))
+      2.5%      97.5% 
+-0.8571538  2.3365869 
+
+> set.seed(62)
+
+> boot3 = replicate(5000, {
++     s = mutate(slice_sample(dt, prop = 1, replace = TRUE), ce_c = CE - 
++         mean(CE), mt_c = MTI - mean(MTI))
++     coef(lm(Race_Sat ~ ce_c * mt_c, data = s))["ce_c:mt_c"]
++ })
+
+> quantile(boot3, c(0.025, 0.975))
+     2.5%     97.5% 
+-0.814297  2.303569 
+
+> t_int = function(y) summary(lm(y ~ ce_c * mt_c, data = dt))$coefficients["ce_c:mt_c", 
++     "t value"]
+
+> t_obs = t_int(dt$Race_Sat)
+
+> set.seed(20261113)
+
+> red = lm(Race_Sat ~ ce_c + mt_c, data = dt)
+
+> t_fl = replicate(5000, t_int(fitted(red) + sample(resid(red))))
+
+> mean(abs(t_fl) >= abs(t_obs))
+[1] 0.0434
+
+> m = lm(Race_Sat ~ ce_c * mt_c, data = dt)
+
+> t3 = coef(m)["ce_c:mt_c"]/sqrt(diag(sandwich::vcovHC(m, 
++     type = "HC3")))["ce_c:mt_c"]
+
+> 2 * pt(-abs(t3), m$df.residual)
+ce_c:mt_c 
+0.2002414 
+
+> dt = mutate(dt, sat = factor(Race_Sat, ordered = TRUE))
+
+> full = MASS::polr(sat ~ ce_c * mt_c, data = dt, Hess = TRUE)
+
+> red = MASS::polr(sat ~ ce_c + mt_c, data = dt, Hess = TRUE)
+
+> anova(red, full)
+Likelihood ratio tests of ordinal regression models
+
+Response: sat
+        Model Resid. df Resid. Dev   Test    Df LR stat.    Pr(Chi)
+1 ce_c + mt_c        42   129.2975                                 
+2 ce_c * mt_c        41   125.8136 1 vs 2     1 3.483888 0.06196899
+
+> row1 = tibble(Model = "MT", OLS_p = summary(lm(Race_Sat ~ 
++     ce_c * mt_c, data = dt))$coefficients["ce_c:mt_c", 4], perm_p = mean(abs(t_fl) >= 
++     abs(t_obs)), HC3_p = 2 * pt(-abs(t3), m$df.residual), ord_p = anova(red, 
++     full)$`Pr(Chi)`[2], boot_lo = quantile(boot1, 0.025), boot_hi = quantile(boot1, 
++     0.975))
+
+> dt = mutate(drop_na(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++     Race_Sat, CE, MTI, BRS, CDRISC), ce_c = CE - mean(CE), mt_c = MTI - 
++     mean(MTI), sat = factor(Race_Sat, ordered = TRUE))
+
+> f_full = Race_Sat ~ ce_c * mt_c + BRS + CDRISC
+
+> f_red = Race_Sat ~ ce_c + mt_c + BRS + CDRISC
+
+> m = lm(f_full, data = dt)
+
+> set.seed(20261113)
+
+> boot = replicate(5000, {
++     s = mutate(slice_sample(dt, prop = 1, replace = TRUE), ce_c = CE - 
++         mean(CE), mt_c = MTI - mean(MTI))
++     coef(lm(f_full, data = s))["ce_c:mt_c"]
++ })
+
+> t_int = function(y) {
++     dt$y = y
++     summary(lm(update(f_full, y ~ .), data = dt))$coefficients["ce_c:mt_c", 
++         "t value"]
++ }
+
+> set.seed(20261113)
+
+> red = lm(f_red, data = dt)
+
+> perm_p = mean(abs(replicate(5000, t_int(fitted(red) + 
++     sample(resid(red))))) >= abs(t_int(dt$Race_Sat)))
+
+> t3 = coef(m)["ce_c:mt_c"]/sqrt(diag(sandwich::vcovHC(m, 
++     type = "HC3")))["ce_c:mt_c"]
+
+> ord_p = anova(MASS::polr(update(f_red, sat ~ .), data = dt, 
++     Hess = TRUE), MASS::polr(update(f_full, sat ~ .), data = dt, 
++     Hess = TRUE))$`Pr(Chi)`[2]
+
+> round(tibble(OLS_p = summary(m)$coefficients["ce_c:mt_c", 
++     4], perm_p = perm_p, HC3_p = 2 * pt(-abs(t3), m$df.residual), 
++     ord_p = ord_p, boot_lo = quantile(boot, 0.025), boot_hi = quantile(boot, 
++         0.975)), 3)
+# A tibble: 1 × 6
+  OLS_p perm_p HC3_p ord_p boot_lo boot_hi
+  <dbl>  <dbl> <dbl> <dbl>   <dbl>   <dbl>
+1 0.071  0.071 0.241 0.087   -1.06    2.39
+
+> row2 = tibble(Model = "MT, adjusted", OLS_p = summary(m)$coefficients["ce_c:mt_c", 
++     4], perm_p = perm_p, HC3_p = 2 * pt(-abs(t3), m$df.residual), 
++     ord_p = ord_p, boot_lo = quantile(boot, 0.025), boot_hi = quantile(boot, 
++         0.975))
+
+> dt = mutate(drop_na(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++     Race_Sat, CE, CDRISC), ce_c = CE - mean(CE), cd_c = CDRISC - 
++     mean(CDRISC))
+
+> m = feols(Race_Sat ~ ce_c * cd_c, data = dt)
+
+> print(m)
+OLS estimation, Dep. Var.: Race_Sat
+Observations: 46
+Standard-errors: IID 
+            Estimate Std. Error   t value  Pr(>|t|)    
+(Intercept) 3.432088   0.200124 17.149770 < 2.2e-16 ***
+ce_c        0.588698   0.479444  1.227878 0.2263298    
+cd_c        0.249514   0.484477  0.515018 0.6092403    
+ce_c:cd_c   3.562071   1.056880  3.370365 0.0016196 ** 
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+RMSE: 1.29391   Adj. R2: 0.202591
+
+> set.seed(20261113)
+
+> boot = replicate(5000, {
++     s = mutate(slice_sample(dt, prop = 1, replace = TRUE), ce_c = CE - 
++         mean(CE), cd_c = CDRISC - mean(CDRISC))
++     coef(lm(Race_Sat ~ ce_c * cd_c, data = s))["ce_c:cd_c"]
++ })
+
+> quantile(boot, c(0.025, 0.975))
+    2.5%    97.5% 
+1.637050 5.098183 
+
+> t_int = function(y) summary(lm(y ~ ce_c * cd_c, data = dt))$coefficients["ce_c:cd_c", 
++     "t value"]
+
+> t_obs = t_int(dt$Race_Sat)
+
+> set.seed(20261113)
+
+> red = lm(Race_Sat ~ ce_c + cd_c, data = dt)
+
+> t_fl = replicate(5000, t_int(fitted(red) + sample(resid(red))))
+
+> mean(abs(t_fl) >= abs(t_obs))
+[1] 0.0012
+
+> m = lm(Race_Sat ~ ce_c * cd_c, data = dt)
+
+> t3 = coef(m)["ce_c:cd_c"]/sqrt(diag(sandwich::vcovHC(m, 
++     type = "HC3")))["ce_c:cd_c"]
+
+> 2 * pt(-abs(t3), m$df.residual)
+   ce_c:cd_c 
+5.134529e-05 
+
+> dt = mutate(dt, sat = factor(Race_Sat, ordered = TRUE))
+
+> full = MASS::polr(sat ~ ce_c * cd_c, data = dt, Hess = TRUE)
+
+> red = MASS::polr(sat ~ ce_c + cd_c, data = dt, Hess = TRUE)
+
+> anova(red, full)
+Likelihood ratio tests of ordinal regression models
+
+Response: sat
+        Model Resid. df Resid. Dev   Test    Df LR stat.      Pr(Chi)
+1 ce_c + cd_c        40   126.0194                                   
+2 ce_c * cd_c        39   113.8243 1 vs 2     1 12.19506 0.0004791628
+
+> row3 = tibble(Model = "CD-RISC", OLS_p = summary(m)$coefficients["ce_c:cd_c", 
++     4], perm_p = mean(abs(t_fl) >= abs(t_obs)), HC3_p = 2 * pt(-abs(t3), 
++     m$df.residual), ord_p = anova(red, full)$`Pr(Chi)`[2], boot_lo = quantile(boot, 
++     0.025), boot_hi = quantile(boot, 0.975))
+
+> dt = mutate(drop_na(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++     Race_Sat, CE, CDRISC, BRS, MTI), ce_c = CE - mean(CE), cd_c = CDRISC - 
++     mean(CDRISC))
+
+> m = feols(Race_Sat ~ ce_c * cd_c + BRS + MTI, data = dt)
+
+> print(m)
+OLS estimation, Dep. Var.: Race_Sat
+Observations: 46
+Standard-errors: IID 
+             Estimate Std. Error   t value   Pr(>|t|)    
+(Intercept)  5.525506   1.970229  2.804499 0.00774057 ** 
+ce_c         0.560820   0.479421  1.169786 0.24901017    
+cd_c         0.640952   0.574898  1.114896 0.27154866    
+BRS          0.078776   0.429701  0.183327 0.85546740    
+MTI         -0.384912   0.268479 -1.433676 0.15943594    
+ce_c:cd_c    3.859389   1.079551  3.574994 0.00093301 ***
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+RMSE: 1.26148   Adj. R2: 0.204164
+
+> set.seed(20261113)
+
+> boot = replicate(5000, {
++     s = mutate(slice_sample(dt, prop = 1, replace = TRUE), ce_c = CE - 
++         mean(CE), cd_c = CDRISC - mean(CDRISC))
++     coef(lm(Race_Sat ~ ce_c * cd_c + BRS + MTI, data = s))["ce_c:cd_c"]
++ })
+
+> quantile(boot, c(0.025, 0.975))
+    2.5%    97.5% 
+1.718870 5.719383 
+
+> t_int = function(y) summary(lm(y ~ ce_c * cd_c + BRS + 
++     MTI, data = dt))$coefficients["ce_c:cd_c", "t value"]
+
+> t_obs = t_int(dt$Race_Sat)
+
+> set.seed(20261113)
+
+> red = lm(Race_Sat ~ ce_c + cd_c + BRS + MTI, data = dt)
+
+> t_fl = replicate(5000, t_int(fitted(red) + sample(resid(red))))
+
+> mean(abs(t_fl) >= abs(t_obs))
+[1] 4e-04
+
+> m = lm(Race_Sat ~ ce_c * cd_c + BRS + MTI, data = dt)
+
+> t3 = coef(m)["ce_c:cd_c"]/sqrt(diag(sandwich::vcovHC(m, 
++     type = "HC3")))["ce_c:cd_c"]
+
+> 2 * pt(-abs(t3), m$df.residual)
+   ce_c:cd_c 
+0.0003883781 
+
+> dt = mutate(dt, sat = factor(Race_Sat, ordered = TRUE))
+
+> full = MASS::polr(sat ~ ce_c * cd_c + BRS + MTI, data = dt, 
++     Hess = TRUE)
+
+> red = MASS::polr(sat ~ ce_c + cd_c + BRS + MTI, data = dt, 
++     Hess = TRUE)
+
+> anova(red, full)
+Likelihood ratio tests of ordinal regression models
+
+Response: sat
+                    Model Resid. df Resid. Dev   Test    Df LR stat.
+1 ce_c + cd_c + BRS + MTI        38   124.7233                      
+2 ce_c * cd_c + BRS + MTI        37   109.8980 1 vs 2     1 14.82532
+       Pr(Chi)
+1             
+2 0.0001179413
+
+> row4 = tibble(Model = "CD-RISC, adjusted", OLS_p = summary(m)$coefficients["ce_c:cd_c", 
++     4], perm_p = mean(abs(t_fl) >= abs(t_obs)), HC3_p = 2 * pt(-abs(t3), 
++     m$df.residual), ord_p = anova(red, full)$`Pr(Chi)`[2], boot_lo = quantile(boot, 
++     0.025), boot_hi = quantile(boot, 0.975))
+
+> dt = mutate(drop_na(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++     Race_Sat, CE, BRS), ce_c = CE - mean(CE), brs_c = BRS - mean(BRS))
+
+> m = feols(Race_Sat ~ ce_c * brs_c, data = dt)
+
+> print(m)
+OLS estimation, Dep. Var.: Race_Sat
+Observations: 47
+Standard-errors: IID 
+            Estimate Std. Error   t value  Pr(>|t|)    
+(Intercept) 3.467377   0.208112 16.661077 < 2.2e-16 ***
+ce_c        0.697840   0.500806  1.393433  0.170650    
+brs_c       0.337160   0.418863  0.804940  0.425283    
+ce_c:brs_c  2.008019   0.857856  2.340741  0.023953 *  
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+RMSE: 1.36329   Adj. R2: 0.099258
+
+> set.seed(20261113)
+
+> boot = replicate(5000, {
++     s = mutate(slice_sample(dt, prop = 1, replace = TRUE), ce_c = CE - 
++         mean(CE), brs_c = BRS - mean(BRS))
++     coef(lm(Race_Sat ~ ce_c * brs_c, data = s))["ce_c:brs_c"]
++ })
+
+> quantile(boot, c(0.025, 0.975))
+      2.5%      97.5% 
+-0.1921411  4.1174782 
+
+> t_int = function(y) summary(lm(y ~ ce_c * brs_c, data = dt))$coefficients["ce_c:brs_c", 
++     "t value"]
+
+> t_obs = t_int(dt$Race_Sat)
+
+> set.seed(20261113)
+
+> red = lm(Race_Sat ~ ce_c + brs_c, data = dt)
+
+> t_fl = replicate(5000, t_int(fitted(red) + sample(resid(red))))
+
+> mean(abs(t_fl) >= abs(t_obs))
+[1] 0.0234
+
+> m = lm(Race_Sat ~ ce_c * brs_c, data = dt)
+
+> t3 = coef(m)["ce_c:brs_c"]/sqrt(diag(sandwich::vcovHC(m, 
++     type = "HC3")))["ce_c:brs_c"]
+
+> 2 * pt(-abs(t3), m$df.residual)
+ce_c:brs_c 
+0.03705009 
+
+> dt = mutate(dt, sat = factor(Race_Sat, ordered = TRUE))
+
+> full = MASS::polr(sat ~ ce_c * brs_c, data = dt, Hess = TRUE)
+
+> red = MASS::polr(sat ~ ce_c + brs_c, data = dt, Hess = TRUE)
+
+> anova(red, full)
+Likelihood ratio tests of ordinal regression models
+
+Response: sat
+         Model Resid. df Resid. Dev   Test    Df LR stat.    Pr(Chi)
+1 ce_c + brs_c        41   128.1230                                 
+2 ce_c * brs_c        40   122.3858 1 vs 2     1 5.737196 0.01660928
+
+> row5 = tibble(Model = "BRS", OLS_p = summary(m)$coefficients["ce_c:brs_c", 
++     4], perm_p = mean(abs(t_fl) >= abs(t_obs)), HC3_p = 2 * pt(-abs(t3), 
++     m$df.residual), ord_p = anova(red, full)$`Pr(Chi)`[2], boot_lo = quantile(boot, 
++     0.025), boot_hi = quantile(boot, 0.975))
+
+> dt = mutate(drop_na(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++     Race_Sat, CE, BRS, MTI, CDRISC), ce_c = CE - mean(CE), brs_c = BRS - 
++     mean(BRS))
+
+> m = feols(Race_Sat ~ ce_c * brs_c + MTI + CDRISC, 
++     data = dt)
+
+> print(m)
+OLS estimation, Dep. Var.: Race_Sat
+Observations: 46
+Standard-errors: IID 
+             Estimate Std. Error   t value  Pr(>|t|)    
+(Intercept)  4.921798   1.694088  2.905279 0.0059519 ** 
+ce_c         0.704738   0.511812  1.376948 0.1761863    
+brs_c        0.513530   0.482623  1.064040 0.2936919    
+MTI         -0.308955   0.286540 -1.078224 0.2873934    
+CDRISC       0.231198   0.616906  0.374770 0.7098111    
+ce_c:brs_c   2.154584   0.898988  2.396676 0.0213085 *  
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+RMSE: 1.35504   Adj. R2: 0.081745
+
+> set.seed(20261113)
+
+> boot = replicate(5000, {
++     s = mutate(slice_sample(dt, prop = 1, replace = TRUE), ce_c = CE - 
++         mean(CE), brs_c = BRS - mean(BRS))
++     coef(lm(Race_Sat ~ ce_c * brs_c + MTI + CDRISC, data = s))["ce_c:brs_c"]
++ })
+
+> quantile(boot, c(0.025, 0.975))
+      2.5%      97.5% 
+-0.1496662  4.2041449 
+
+> t_int = function(y) summary(lm(y ~ ce_c * brs_c + 
++     MTI + CDRISC, data = dt))$coefficients["ce_c:brs_c", "t value"]
+
+> t_obs = t_int(dt$Race_Sat)
+
+> set.seed(20261113)
+
+> red = lm(Race_Sat ~ ce_c + brs_c + MTI + CDRISC, data = dt)
+
+> t_fl = replicate(5000, t_int(fitted(red) + sample(resid(red))))
+
+> mean(abs(t_fl) >= abs(t_obs))
+[1] 0.0214
+
+> m = lm(Race_Sat ~ ce_c * brs_c + MTI + CDRISC, data = dt)
+
+> t3 = coef(m)["ce_c:brs_c"]/sqrt(diag(sandwich::vcovHC(m, 
++     type = "HC3")))["ce_c:brs_c"]
+
+> 2 * pt(-abs(t3), m$df.residual)
+ce_c:brs_c 
+0.02519578 
+
+> dt = mutate(dt, sat = factor(Race_Sat, ordered = TRUE))
+
+> full = MASS::polr(sat ~ ce_c * brs_c + MTI + CDRISC, 
++     data = dt, Hess = TRUE)
+
+> red = MASS::polr(sat ~ ce_c + brs_c + MTI + CDRISC, 
++     data = dt, Hess = TRUE)
+
+> anova(red, full)
+Likelihood ratio tests of ordinal regression models
+
+Response: sat
+                        Model Resid. df Resid. Dev   Test    Df LR stat.
+1 ce_c + brs_c + MTI + CDRISC        38   124.7233                      
+2 ce_c * brs_c + MTI + CDRISC        37   118.7703 1 vs 2     1 5.953024
+     Pr(Chi)
+1           
+2 0.01469206
+
+> row6 = tibble(Model = "BRS, adjusted", OLS_p = summary(m)$coefficients["ce_c:brs_c", 
++     4], perm_p = mean(abs(t_fl) >= abs(t_obs)), HC3_p = 2 * pt(-abs(t3), 
++     m$df.residual), ord_p = anova(red, full)$`Pr(Chi)`[2], boot_lo = quantile(boot, 
++     0.025), boot_hi = quantile(boot, 0.975))
+
+> tab = mutate(bind_rows(row1, row2, row3, row4, row5, 
++     row6), across(where(is.numeric), ~round(.x, 3)))
+
+> tab
+# A tibble: 6 × 7
+  Model             OLS_p perm_p HC3_p ord_p boot_lo boot_hi
+  <chr>             <dbl>  <dbl> <dbl> <dbl>   <dbl>   <dbl>
+1 MT                0.04   0.043 0.2   0.062  -0.846    2.32
+2 MT, adjusted      0.071  0.071 0.241 0.087  -1.06     2.39
+3 CD-RISC           0.002  0.001 0     0       1.64     5.10
+4 CD-RISC, adjusted 0.001  0     0     0       1.72     5.72
+5 BRS               0.024  0.023 0.037 0.017  -0.192    4.12
+6 BRS, adjusted     0.021  0.021 0.025 0.015  -0.15     4.20
+
+> dt = mutate(filter(mutate(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++     id = row_number()), if_all(starts_with("Q16_"), ~!is.na(.x))), 
++     CF = rowMeans(pick(starts_with("Q16_"))))
+
+> r_full = cor(dt$Race_Sat, dt$CF)
+
+> loo = map_dfr(seq_len(nrow(dt)), function(i) {
++     ct = cor.test(dt$Race_Sat[-i], dt$CF[-i])
++     tibble(dropped = dt$id[i], r = ct$estimate, p = ct$p.value)
++ })
+
+> arrange(loo, desc(abs(r - r_full)))
+# A tibble: 41 × 3
+   dropped      r       p
+     <int>  <dbl>   <dbl>
+ 1       3 -0.205 0.204  
+ 2       2 -0.418 0.00735
+ 3      42 -0.411 0.00848
+ 4      48 -0.406 0.00938
+ 5      11 -0.306 0.0546 
+ 6      40 -0.392 0.0123 
+ 7       6 -0.325 0.0407 
+ 8       4 -0.331 0.0370 
+ 9      38 -0.377 0.0166 
+10      13 -0.376 0.0167 
+# ℹ 31 more rows
+
+> cor.test(dt$Race_Sat, dt$CF)
+
+	Pearson's product-moment correlation
+
+data:  dt$Race_Sat and dt$CF
+t = -2.371, df = 39, p-value = 0.02278
+alternative hypothesis: true correlation is not equal to 0
+95 percent confidence interval:
+ -0.59735859 -0.05308392
+sample estimates:
+       cor 
+-0.3549378 
+
+
+> cor.test(dt$Race_Sat, dt$CF, method = "spearman")
+
+	Spearman's rank correlation rho
+
+data:  dt$Race_Sat and dt$CF
+S = 13168, p-value = 0.3589
+alternative hypothesis: true rho is not equal to 0
+sample estimates:
+       rho 
+-0.1470397 
+
+
+> cor.test(dt$Race_Sat, dt$CF, method = "kendall")
+
+	Kendall's rank correlation tau
+
+data:  dt$Race_Sat and dt$CF
+z = -0.88513, p-value = 0.3761
+alternative hypothesis: true tau is not equal to 0
+sample estimates:
+       tau 
+-0.1094569 
+
+
+> dt3 = filter(dt, id != 3)
+
+> cor.test(dt3$Race_Sat, dt3$CF)
+
+	Pearson's product-moment correlation
+
+data:  dt3$Race_Sat and dt3$CF
+t = -1.2926, df = 38, p-value = 0.204
+alternative hypothesis: true correlation is not equal to 0
+95 percent confidence interval:
+ -0.4856851  0.1135426
+sample estimates:
+       cor 
+-0.2052255 
+
+
+> da = filter(mutate(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++     CF = rowMeans(pick(starts_with("Q16_")), na.rm = TRUE)), 
++     !is.nan(CF), !is.na(Race_Sat))
+
+> cor.test(da$Race_Sat, da$CF)
+
+	Pearson's product-moment correlation
+
+data:  da$Race_Sat and da$CF
+t = -1.1068, df = 46, p-value = 0.2742
+alternative hypothesis: true correlation is not equal to 0
+95 percent confidence interval:
+ -0.4257067  0.1289845
+sample estimates:
+       cor 
+-0.1610526 
+
+
+> cor.test(da$Race_Sat, da$CF, method = "spearman")
+
+	Spearman's rank correlation rho
+
+data:  da$Race_Sat and da$CF
+S = 19705, p-value = 0.6386
+alternative hypothesis: true rho is not equal to 0
+sample estimates:
+        rho 
+-0.06953678 
+
+
+> s5 = mutate(filter(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++     if_all(starts_with("Q16_"), ~!is.na(.x))), CF = rowMeans(pick(starts_with("Q16_"))))
+
+> set.seed(20261113)
+
+> boot_r = replicate(5000, {
++     s = slice_sample(s5, prop = 1, replace = TRUE)
++     cor(s$Race_Sat, s$CF)
++ })
+
+> quantile(boot_r, c(0.025, 0.975))
+      2.5%      97.5% 
+-0.6283075  0.0640884 
+
+> cd = cooks.distance(lm(CF ~ Race_Sat, data = s5))
+
+> max(cd)
+[1] 0.8584577
+
+> which.max(cd)
+3 
+3 
+
+> set.seed(20261113)
+
+> r_obs = cor(s5$Race_Sat, s5$CF)
+
+> perm = replicate(5000, cor(sample(s5$Race_Sat), s5$CF))
+
+> mean(abs(perm) >= abs(r_obs))
+[1] 0.021
+
+> dm = drop_na(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++     MTI)
+
+> range(dm$MTI)
+[1] 4.142857 8.000000
+
+> sum(dm$MTI > 7)
+[1] 8
+
+> all(abs(dm$MTI * 7 - round(dm$MTI * 7)) < 1e-06)
+[1] TRUE
+
+> all(abs(dm$MTI * 8 - round(dm$MTI * 8)) < 1e-06)
+[1] FALSE
+
+> range(round(dm$MTI * 7))
+[1] 29 56
+
+> mean(dm$MTI * 7/8)
+[1] 5.385417
+
+> sd(dm$MTI * 7/8)
+[1] 0.8202204
+
+> sum(abs(dm$MTI * 8 - round(dm$MTI * 8)) < 1e-06)
+[1] 8
+
+> sum(dm$MTI == 8)
+[1] 2
+
+> dt = mutate(drop_na(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++     Race_Sat, CE, MTI), ce_c = CE - mean(CE), mt_c = MTI * 7/8 - 
++     mean(MTI * 7/8))
+
+> feols(Race_Sat ~ ce_c * mt_c, data = dt)
+OLS estimation, Dep. Var.: Race_Sat
+Observations: 48
+Standard-errors: IID 
+             Estimate Std. Error   t value  Pr(>|t|)    
+(Intercept)  3.490139   0.207531 16.817460 < 2.2e-16 ***
+ce_c         0.843684   0.497640  1.695370  0.097072 .  
+mt_c        -0.213700   0.261787 -0.816312  0.418719    
+ce_c:mt_c    1.569069   0.741331  2.116556  0.039989 *  
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+RMSE: 1.37324   Adj. R2: 0.087659
+
+> d6 = mutate(drop_na(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++     Race_Sat, CE, MTI, BRS, CDRISC), ce_c = CE - mean(CE), mt_c = MTI * 
++     7/8 - mean(MTI * 7/8))
+
+> feols(Race_Sat ~ ce_c * mt_c + BRS + CDRISC, data = d6)
+OLS estimation, Dep. Var.: Race_Sat
+Observations: 46
+Standard-errors: IID 
+             Estimate Std. Error   t value Pr(>|t|)    
+(Intercept)  2.396757   1.880389  1.274607 0.209803    
+ce_c         0.801443   0.524637  1.527613 0.134478    
+mt_c        -0.347460   0.337475 -1.029588 0.309389    
+BRS          0.150067   0.472945  0.317303 0.752664    
+CDRISC       0.281329   0.632142  0.445041 0.658689    
+ce_c:mt_c    1.472290   0.793889  1.854527 0.071046 .  
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+RMSE: 1.39052   Adj. R2: 0.033025
+
+> m6 = lm(Race_Sat ~ ce_c * mt_c + BRS + CDRISC, data = d6)
+
+> V6 = vcov(m6)
+
+> s6 = sd(d6$mt_c)
+
+> map_dfr(c(high = 1, low = -1), function(k) {
++     w = k * s6
++     b = coef(m6)["ce_c"] + w * coef(m6)["ce_c:mt_c"]
++     se = sqrt(V6["ce_c", "ce_c"] + w^2 * V6["ce_c:mt_c", "ce_c:mt_c"] + 
++         2 * w * V6["ce_c", "ce_c:mt_c"])
++     tibble(MT = ifelse(k > 0, "high", "low"), b = b, p = 2 * 
++         pt(-abs(b/se), m6$df.residual))
++ })
+# A tibble: 2 × 3
+  MT         b      p
+  <chr>  <dbl>  <dbl>
+1 high   1.98  0.0228
+2 low   -0.376 0.646 
+
+> cap7 = function(covs = NULL) {
++     d = mutate(drop_na(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++         all_of(c("Race_Sat", "CE", "MTI", covs))), MTc = pmin(MTI, 
++         7), ce_c = CE - mean(CE), mt_c = MTc - mean(MTc))
++     f = as.formula(paste("Race_Sat ~", paste(c("ce_c * mt_c", 
++         covs), collapse = " + ")))
++     summary(lm(f, data = d))$coefficients["ce_c:mt_c", ]
++ }
+
+> cap7()
+  Estimate Std. Error    t value   Pr(>|t|) 
+1.69689849 0.76376874 2.22174384 0.03149115 
+
+> cap7(c("BRS", "CDRISC"))
+  Estimate Std. Error    t value   Pr(>|t|) 
+1.63269359 0.82486580 1.97934451 0.05468866 
+
+> dx = mutate(filter(drop_na(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++     Race_Sat, CE, MTI), MTI <= 7), ce_c = CE - mean(CE), mt_c = MTI - 
++     mean(MTI))
+
+> nrow(dx)
+[1] 40
+
+> feols(Race_Sat ~ ce_c * mt_c, data = dx)
+OLS estimation, Dep. Var.: Race_Sat
+Observations: 40
+Standard-errors: IID 
+             Estimate Std. Error   t value  Pr(>|t|)    
+(Intercept)  3.568373   0.229210 15.568128 < 2.2e-16 ***
+ce_c         0.600450   0.539764  1.112431  0.273326    
+mt_c        -0.199191   0.327923 -0.607430  0.547378    
+ce_c:mt_c    2.022475   0.888528  2.276208  0.028883 *  
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+RMSE: 1.37273   Adj. R2: 0.108548
+
+> feols(Race_Sat ~ ce_c * mt_c + BRS + CDRISC, data = dx)
+NOTE: 2 observations removed because of NA values (RHS: 2).
+OLS estimation, Dep. Var.: Race_Sat
+Observations: 38
+Standard-errors: IID 
+             Estimate Std. Error   t value Pr(>|t|)    
+(Intercept)  4.208362   2.167487  1.941586 0.061036 .  
+ce_c         0.594150   0.574249  1.034656 0.308586    
+mt_c        -0.096303   0.432809 -0.222507 0.825333    
+BRS          0.157016   0.518809  0.302646 0.764118    
+CDRISC      -0.645058   0.826489 -0.780479 0.440844    
+ce_c:mt_c    2.024779   0.989035  2.047226 0.048920 *  
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+RMSE: 1.3919   Adj. R2: 0.047777
+
+> dt = filter(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++     if_all(starts_with("Q16_"), ~!is.na(.x)))
+
+> items = select(dt, starts_with("Q16_"))
+
+> tibble(item = 1:11, M = round(colMeans(items), 2), 
++     SD = round(map_dbl(items, sd), 2))
+# A tibble: 11 × 3
+    item     M    SD
+   <int> <dbl> <dbl>
+ 1     1  1.41  0.95
+ 2     2  1.68  1.13
+ 3     3  1.88  1.21
+ 4     4  1.93  1.17
+ 5     5  2.2   1.1 
+ 6     6  2.59  1.2 
+ 7     7  2.51  1.19
+ 8     8  2.49  1.12
+ 9     9  2.41  1.16
+10    10  2.29  1.29
+11    11  2.24  1.3 
+
+> labs = map_chr(select(read_sav("data/Madiera data 2024.sav"), 
++     starts_with("Q16_")), ~attr(.x, "label"))
+
+> labs
+                              Q16_1FrequencyOfHabitualStrategy1 
+                             "Frequency2 Fanal (check point 2)" 
+                              Q16_2FrequencyOfHabitualStrategy2 
+                   "Frequency3 Chao da Riberia (check point 3)" 
+                              Q16_3FrequencyOfHabitualStrategy3 
+                      "Frequency4 Estanquinhos (check point 4)" 
+                              Q16_4FrequencyOfHabitualStrategy4 
+                           "Frequency5 Rosario (check point 5)" 
+                              Q16_5FrequencyOfHabitualStrategy5 
+                          "Frequency6 Encumeada Check point 6)" 
+                              Q16_6FrequencyOfHabitualStrategy6 
+"Frequency7 Curral das Feiras (check point 7, around half way)" 
+                              Q16_7FrequencyOfHabitualStrategy7 
+                        "Frequency8 Pico Ruvio (check point 8)" 
+                              Q16_8FrequencyOfHabitualStrategy8 
+                     "Frequency9 Chao da Lagoa (Check point 9)" 
+                              Q16_9FrequencyOfHabitualStrategy9 
+         "Frequency10 Poiso (check point 10, after last climb)" 
+                            Q16_10FrequencyOfHabitualStrategy10 
+                         "Frequency11 Portela (check point 11)" 
+                            Q16_11FrequencyOfHabitualStrategy11 
+                          "Frequency12 Larano (check point 12)" 
+
+> d7 = filter(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++     if_all(starts_with("Q16_"), ~!is.na(.x)))
+
+> x6 = d7[[grep("^Q16_6", names(d7), value = TRUE)]]
+
+> x7 = d7[[grep("^Q16_7", names(d7), value = TRUE)]]
+
+> mean(x6) - mean(x7)
+[1] 0.07317073
+
+> t.test(x6, x7, paired = TRUE)$p.value
+[1] 0.7265292
+
+> pct = c(male = 89.6, female = 10.4, very_comp = 4.2, 
++     competitive = 31.3, in_between = 43.8, recreational = 20.8, 
++     elite = 8.5, middle_pack = 85.1, back_pack = 6.4)
+
+> fits = function(N) sapply(pct, function(p) any(abs(100 * 
++     (0:N)/N - p) <= 0.05 + 1e-09))
+
+> rbind(N47 = fits(47), N48 = fits(48))
+     male female very_comp competitive in_between recreational elite
+N47 FALSE  FALSE     FALSE       FALSE      FALSE        FALSE  TRUE
+N48  TRUE   TRUE      TRUE        TRUE       TRUE         TRUE FALSE
+    middle_pack back_pack
+N47        TRUE      TRUE
+N48       FALSE     FALSE
+
+> raw = zap_labels(read_sav("data/Madiera data 2024.sav"))
+
+> ss = function(mod, covs) {
++     d = mutate(drop_na(raw, all_of(c("Race_Sat", "CE", mod, covs))), 
++         ce_c = CE - mean(CE), w_c = .data[[mod]] - mean(.data[[mod]]))
++     m = lm(as.formula(paste("Race_Sat ~ ce_c * w_c +", paste(covs, 
++         collapse = " + "))), data = d)
++     V = vcov(m)
++     s = sd(d[[mod]])
++     map_dfr(c(1, -1), function(k) {
++         w = k * s
++         b = coef(m)["ce_c"] + w * coef(m)["ce_c:w_c"]
++         se = sqrt(V["ce_c", "ce_c"] + w^2 * V["ce_c:w_c", "ce_c:w_c"] + 
++             2 * w * V["ce_c", "ce_c:w_c"])
++         q = qt(0.975, m$df.residual)
++         tibble(model = mod, level = ifelse(k > 0, "high", "low"), 
++             b = b, p = 2 * pt(-abs(b/se), m$df.residual), lo = b - 
++                 q * se, hi = b + q * se)
++     })
++ }
+
+> mutate(bind_rows(ss("MTI", c("BRS", "CDRISC")), ss("CDRISC", 
++     c("BRS", "MTI")), ss("BRS", c("MTI", "CDRISC"))), across(where(is.numeric), 
++     ~round(.x, 3)))
+# A tibble: 6 × 6
+  model  level      b     p     lo    hi
+  <chr>  <chr>  <dbl> <dbl>  <dbl> <dbl>
+1 MTI    high   1.98  0.023  0.29  3.67 
+2 MTI    low   -0.376 0.646 -2.02  1.26 
+3 CDRISC high   2.17  0.001  0.928 3.42 
+4 CDRISC low   -1.05  0.14  -2.46  0.358
+5 BRS    high   1.82  0.01   0.463 3.18 
+6 BRS    low   -0.414 0.564 -1.85  1.02 
+
+> c(p_17df = pf(17.09, 1, 17, lower.tail = FALSE), eta_17df = 17.09/(17.09 + 
++     17), p_12df = pf(17.09, 1, 12, lower.tail = FALSE), eta_12df = 17.09/(17.09 + 
++     12))
+      p_17df     eta_17df       p_12df     eta_12df 
+0.0006937867 0.5013200352 0.0013855648 0.5874871090 
+
+> raw = zap_labels(read_sav("data/Madiera data 2024.sav"))
+
+> items = grep("^Q16_", names(raw), value = TRUE)
+
+> ce48 = drop_na(raw, CE)
+
+> ce46 = drop_na(raw, Race_Sat, MTI, BRS, CDRISC, CE)
+
+> ce41 = filter(raw, if_all(all_of(items), ~!is.na(.x)))
+
+> round(c(all_48 = mean(ce48$CE), n46 = mean(ce46$CE), 
++     n41 = mean(ce41$CE), sd_48 = sd(ce48$CE)), 3)
+all_48    n46    n41  sd_48 
+ 2.729  2.724  2.767  0.421 
+
+> loo = map_dbl(seq_len(nrow(ce48)), function(i) mean(ce48$CE[-i]))
+
+> round(range(loo), 3)
+[1] 2.711 2.751
+
+> cor.test(raw$BRS, raw$CDRISC)
+
+	Pearson's product-moment correlation
+
+data:  raw$BRS and raw$CDRISC
+t = 2.4763, df = 44, p-value = 0.01719
+alternative hypothesis: true correlation is not equal to 0
+95 percent confidence interval:
+ 0.06615222 0.58104069
+sample estimates:
+     cor 
+0.349734 
+
+
+> crit_r = function(n) {
++     t = qt(0.995, n - 2)
++     t/sqrt(t^2 + n - 2)
++ }
+
+> round(c(n46 = crit_r(46), n47 = crit_r(47)), 3)
+  n46   n47 
+0.376 0.372 
+
+> pf(2.68, 3, 43, lower.tail = FALSE)
+[1] 0.05874517
+
+> brs = mutate(drop_na(raw, Race_Sat, CE, BRS), ce_c = CE - 
++     mean(CE), b_c = BRS - mean(BRS))
+
+> s = summary(lm(Race_Sat ~ ce_c * b_c, data = brs))
+
+> pf(s$fstatistic[1], s$fstatistic[2], s$fstatistic[3], 
++     lower.tail = FALSE)
+     value 
+0.05810141 
+
+> r2 = function(mod, covs = NULL) {
++     d = mutate(drop_na(raw, all_of(c("Race_Sat", "CE", mod, covs))), 
++         ce_c = CE - mean(CE), w_c = .data[[mod]] - mean(.data[[mod]]))
++     f = as.formula(paste("Race_Sat ~", paste(c("ce_c * w_c", 
++         covs), collapse = " + ")))
++     summary(lm(f, data = d))$r.squared
++ }
+
+> round(c(MT = r2("MTI"), MT_adj = r2("MTI", c("BRS", 
++     "CDRISC")), CDRISC = r2("CDRISC"), CDRISC_adj = r2("CDRISC", 
++     c("BRS", "MTI")), BRS = r2("BRS"), BRS_adj = r2("BRS", c("MTI", 
++     "CDRISC"))), 4)
+        MT     MT_adj     CDRISC CDRISC_adj        BRS    BRS_adj 
+    0.1459     0.1405     0.2558     0.2926     0.1580     0.1838 
+
+> pow = function(N, f2, u, k) {
++     df2 = N - k - 1
++     1 - pf(qf(0.95, u, df2), u, df2, ncp = f2 * N)
++ }
+
+> need = function(f2, u, k, target = 0.8) {
++     N = k + 3
++     while (pow(N, f2, u, k) < target) N = N + 1
++     N
++ }
+
+> sapply(1:5, function(k) need(0.15, k, k))
+[1] 55 68 77 85 92
+
+> need(0.15, 1, 3)
+[1] 55
+
+> pow(47, 0.15, 1, 3)
+[1] 0.7374579
+
+> pow(47, 0.15, 3, 3)
+[1] 0.5503668
+
+> pow(47, 0.02, 1, 3)
+[1] 0.1575966
+
+> pow(65, 0.15, 1, 3)
+[1] 0.8671492
+
+> lab = read_sav("data/Madiera data 2024.sav")
+
+> attr(lab$CDRISC, "labels")
+         Not true at all              Rarely true           Sometimes true 
+                       1                        2                        3 
+              Often true True nearly all the time 
+                       4                        5 
+
+> attr(lab$BRS, "labels")
+0-2.5 2.6-5 
+    1     2 
+
+> length(unique(na.omit(lab$BRS)))
+[1] 15
+
+> range(lab$BRS, na.rm = TRUE)
+<labelled<double>[2]>: BBRS
+[1] 2.666667 5.000000
+
+Labels:
+ value label
+     1 0-2.5
+     2 2.6-5
+
+> sapply(lab, function(x) class(zap_labels(x)))
+                           Race_Sat                                 MTI 
+                          "numeric"                           "numeric" 
+                                BRS                              CDRISC 
+                          "numeric"                           "numeric" 
+                                 CE   Q16_1FrequencyOfHabitualStrategy1 
+                          "numeric"                           "numeric" 
+  Q16_2FrequencyOfHabitualStrategy2   Q16_3FrequencyOfHabitualStrategy3 
+                          "numeric"                           "numeric" 
+  Q16_4FrequencyOfHabitualStrategy4   Q16_5FrequencyOfHabitualStrategy5 
+                          "numeric"                           "numeric" 
+  Q16_6FrequencyOfHabitualStrategy6   Q16_7FrequencyOfHabitualStrategy7 
+                          "numeric"                           "numeric" 
+  Q16_8FrequencyOfHabitualStrategy8   Q16_9FrequencyOfHabitualStrategy9 
+                          "numeric"                           "numeric" 
+Q16_10FrequencyOfHabitualStrategy10 Q16_11FrequencyOfHabitualStrategy11 
+                          "numeric"                           "numeric" 
+
+> d10 = as.data.frame(zap_labels(read_sav("data/Madiera data 2024.sav")))
+
+> d10 = d10[rowSums(!is.na(d10)) > 0, ]
+
+> pairs = combn(nrow(d10), 2)
+
+> cmp10 = map_dfr(seq_len(ncol(pairs)), function(k) {
++     a = unlist(d10[pairs[1, k], ])
++     b = unlist(d10[pairs[2, k], ])
++     both = !is.na(a) & !is.na(b)
++     tibble(joint = sum(both), diff = sum(abs(a[both] - b[both]) > 
++         1e-09))
++ })
+
+> cmp10 = filter(cmp10, joint >= 10)
+
+> nrow(cmp10)
+[1] 1033
+
+> min(cmp10$diff)
+[1] 4
+
+> sum(cmp10$diff == 0)
+[1] 0
+
+> eig_test = function(X, B = 5000) {
++     X = X[complete.cases(X), ]
++     ev = function(M) max(eigen(cor(M), symmetric = TRUE, only.values = TRUE)$values)
++     obs = ev(X)
++     null = replicate(B, ev(as.data.frame(lapply(X, sample))))
++     c(n = nrow(X), largest = obs, null_max = max(null), p = (sum(null >= 
++         obs) + 1)/(B + 1))
++ }
+
+> set.seed(20261113)
+
+> eig_test(select(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++     Race_Sat, MTI, BRS, CDRISC, CE))
+          n     largest    null_max           p 
+46.00000000  1.84313880  2.13533493  0.00279944 
+
+> eig_test(select(zap_labels(read_sav("data/Madiera data 2024.sav")), 
++     starts_with("Q16_")))
+          n     largest    null_max           p 
+41.00000000  5.04230958  2.71033337  0.00019996 
+
+> d10b = as.data.frame(zap_labels(read_sav("data/Madiera data 2024.sav")))
+
+> d10b = d10b[rowSums(!is.na(d10b)) > 0, ]
+
+> key = apply(d10b, 1, function(r) paste(r, collapse = "|"))
+
+> n = length(key)
+
+> runs = sapply(1:(n - 1), function(k) {
++     same = key[1:(n - k)] == key[(1 + k):n]
++     r = rle(same)
++     if (any(r$values)) 
++         max(r$lengths[r$values])
++     else 0
++ })
+
+> c(rows = n, offsets_checked = length(runs), longest_repeat = max(runs))
+           rows offsets_checked  longest_repeat 
+             48              47               0 
